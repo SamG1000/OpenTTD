@@ -651,6 +651,7 @@ protected:
 	int32_t scroll_y = 0; ///< Vertical world coordinate of the base tile left of the top-left corner of the smallmap display.
 	int32_t subscroll = 0; ///< Number of pixels (0..3) between the right end of the base tile and the pixel at the top-left corner of the smallmap display.
 	int zoom = 0; ///< Zoom level. Bigger number means more zoom-out (further away).
+	int zoom_index = 0; ///< Index of the current zoom level in SetZoomLevel().
 
 	std::unique_ptr<LinkGraphOverlay> overlay{};
 
@@ -668,16 +669,24 @@ protected:
 		return pt;
 	}
 
+	/** Extra pixel magnification at the additional zoom-in levels. */
+	inline int GetZoomScale() const
+	{
+		if (this->zoom_index == 0) return 3;
+		if (this->zoom_index == 1) return 2;
+		return 1;
+	}
+
 	/**
 	 * Draws vertical part of map indicator
 	 * @param x X coord of left/right border of main viewport
 	 * @param y Y coord of top border of main viewport
 	 * @param y2 Y coord of bottom border of main viewport
 	 */
-	static inline void DrawVertMapIndicator(int x, int y, int y2)
+	static inline void DrawVertMapIndicator(int x, int y, int y2, int scale)
 	{
-		GfxFillRect(x, y,      x, y + 3, PC_VERY_LIGHT_YELLOW);
-		GfxFillRect(x, y2 - 3, x, y2,    PC_VERY_LIGHT_YELLOW);
+		GfxFillRect(x, y,                x, y + 3 * scale, PC_VERY_LIGHT_YELLOW);
+		GfxFillRect(x, y2 - 3 * scale,   x, y2,            PC_VERY_LIGHT_YELLOW);
 	}
 
 	/**
@@ -686,10 +695,10 @@ protected:
 	 * @param x2 X coord of right border of main viewport
 	 * @param y Y coord of top/bottom border of main viewport
 	 */
-	static inline void DrawHorizMapIndicator(int x, int x2, int y)
+	static inline void DrawHorizMapIndicator(int x, int x2, int y, int scale)
 	{
-		GfxFillRect(x,      y, x + 3, y, PC_VERY_LIGHT_YELLOW);
-		GfxFillRect(x2 - 3, y, x2,    y, PC_VERY_LIGHT_YELLOW);
+		GfxFillRect(x,              y, x + 3 * scale, y, PC_VERY_LIGHT_YELLOW);
+		GfxFillRect(x2 - 3 * scale, y, x2,            y, PC_VERY_LIGHT_YELLOW);
 	}
 
 	/**
@@ -846,9 +855,11 @@ protected:
 	void SetNewScroll(int sx, int sy, int sub)
 	{
 		const NWidgetBase *wi = this->GetWidget<NWidgetBase>(WID_SM_MAP);
-		Point hv = InverseRemapCoords(wi->current_x * ZOOM_BASE * TILE_SIZE / 2, wi->current_y * ZOOM_BASE * TILE_SIZE / 2);
+		int scale = this->GetZoomScale();
+		Point hv = InverseRemapCoords(wi->current_x * ZOOM_BASE * TILE_SIZE / (2 * scale), wi->current_y * ZOOM_BASE * TILE_SIZE / (2 * scale));
 		hv.x *= this->zoom;
 		hv.y *= this->zoom;
+		int subscroll_cycle = 4 * scale;
 
 		if (sx < -hv.x) {
 			sx = -hv.x;
@@ -869,7 +880,8 @@ protected:
 
 		this->scroll_x = sx;
 		this->scroll_y = sy;
-		this->subscroll = sub;
+		this->subscroll = sub % subscroll_cycle;
+		if (this->subscroll < 0) this->subscroll += subscroll_cycle;
 		if (this->map_type == SMT_LINKSTATS) this->overlay->SetDirty();
 	}
 
@@ -878,6 +890,7 @@ protected:
 	 */
 	void DrawMapIndicators() const
 	{
+		int scale = this->GetZoomScale();
 		/* Find main viewport. */
 		const Viewport &vp = *GetMainWindow()->viewport;
 
@@ -890,11 +903,11 @@ protected:
 		Point lower_right = this->RemapTile(lower_right_smallmap_coord.x / (int)TILE_SIZE, lower_right_smallmap_coord.y / (int)TILE_SIZE);
 		lower_right.x -= this->subscroll;
 
-		SmallMapWindow::DrawVertMapIndicator(upper_left.x, upper_left.y, lower_right.y);
-		SmallMapWindow::DrawVertMapIndicator(lower_right.x, upper_left.y, lower_right.y);
+		SmallMapWindow::DrawVertMapIndicator(upper_left.x, upper_left.y, lower_right.y, scale);
+		SmallMapWindow::DrawVertMapIndicator(lower_right.x, upper_left.y, lower_right.y, scale);
 
-		SmallMapWindow::DrawHorizMapIndicator(upper_left.x, lower_right.x, upper_left.y);
-		SmallMapWindow::DrawHorizMapIndicator(upper_left.x, lower_right.x, lower_right.y);
+		SmallMapWindow::DrawHorizMapIndicator(upper_left.x, lower_right.x, upper_left.y, scale);
+		SmallMapWindow::DrawHorizMapIndicator(upper_left.x, lower_right.x, lower_right.y, scale);
 	}
 
 	/**
@@ -914,6 +927,7 @@ protected:
 	{
 		void *dst_ptr_abs_end = blitter->MoveTo(_screen.dst_ptr, 0, _screen.height);
 		uint min_xy = _settings_game.construction.freeform_edges ? 1 : 0;
+		int scale = this->GetZoomScale();
 
 		do {
 			/* Check if the tile (xc,yc) is within the map range */
@@ -938,7 +952,7 @@ protected:
 			uint8_t *val8 = (uint8_t *)&val;
 			int idx = std::max(0, -start_pos);
 			for (int pos = std::max(0, start_pos); pos < end_pos; pos++) {
-				blitter->SetPixel(dst, idx, 0, PixelColour{val8[idx]});
+				blitter->SetPixel(dst, idx, 0, PixelColour{val8[idx / scale]});
 				idx++;
 			}
 		/* Switch to next tile in the column */
@@ -952,6 +966,7 @@ protected:
 	 */
 	void DrawVehicles(const DrawPixelInfo *dpi, Blitter *blitter) const
 	{
+		int scale = this->GetZoomScale();
 		for (const Vehicle *v : Vehicle::Iterate()) {
 			if (v->type == VehicleType::Effect) continue;
 			if (v->vehstatus.Any({VehState::Hidden, VehState::Unclickable})) continue;
@@ -962,25 +977,17 @@ protected:
 			int y = pt.y - dpi->top;
 			if (!IsInsideMM(y, 0, dpi->height)) continue; // y is out of bounds.
 
-			bool skip = false; // Default is to draw both pixels.
-			int x = pt.x - this->subscroll - 3 - dpi->left; // Offset X coordinate.
-			if (x < 0) {
-				/* if x+1 is 0, that means we're on the very left edge,
-				 * and should thus only draw a single pixel */
-				if (++x != 0) continue;
-				skip = true;
-			} else if (x >= dpi->width - 1) {
-				/* Check if we're at the very right edge, and if so draw only a single pixel */
-				if (x != dpi->width - 1) continue;
-				skip = true;
-			}
+			int x = pt.x - this->subscroll - 3 * scale - dpi->left; // Offset X coordinate.
+			int width = 2 * scale;
+			if (x + width <= 0 || x >= dpi->width) continue;
 
 			/* Calculate pointer to pixel and the colour */
 			PixelColour colour = (this->map_type == SMT_VEHICLES) ? _vehicle_type_colours[v->type] : PC_WHITE;
 
-			/* And draw either one or two pixels depending on clipping */
-			blitter->SetPixel(dpi->dst_ptr, x, y, colour);
-			if (!skip) blitter->SetPixel(dpi->dst_ptr, x + 1, y, colour);
+			/* Draw marker, clipped to viewport bounds. */
+			int draw_from = std::max(0, x);
+			int draw_to = std::min(dpi->width, x + width);
+			for (int xi = draw_from; xi < draw_to; xi++) blitter->SetPixel(dpi->dst_ptr, xi, y, colour);
 		}
 	}
 
@@ -1063,6 +1070,7 @@ protected:
 	{
 		Blitter *blitter = BlitterFactory::GetCurrentBlitter();
 		AutoRestoreBackup dpi_backup(_cur_dpi, dpi);
+		int scale = this->GetZoomScale();
 
 		/* If freeform edges are off, draw infinite water off the edges of the map. */
 		const PixelColour map_clear_color = (_settings_game.construction.freeform_edges ? PC_BLACK : PC_WATER);
@@ -1074,33 +1082,33 @@ protected:
 		int tile_x = this->scroll_x / (int)TILE_SIZE + tile.x;
 		int tile_y = this->scroll_y / (int)TILE_SIZE + tile.y;
 
-		void *ptr = blitter->MoveTo(dpi->dst_ptr, -dx - 4, 0);
-		int x = - dx - 4;
+		void *ptr = blitter->MoveTo(dpi->dst_ptr, -dx - 4 * scale, 0);
+		int x = - dx - 4 * scale;
 		int y = 0;
 
 		for (;;) {
 			/* Distance from left edge */
-			if (x >= -3) {
+			if (x >= -(4 * scale - 1)) {
 				if (x >= dpi->width) break; // Exit the loop.
 
-				int end_pos = std::min(dpi->width, x + 4);
-				int reps = (dpi->height - y + 1) / 2; // Number of lines.
+				int end_pos = std::min(dpi->width, x + 4 * scale);
+				int reps = (dpi->height - y + (2 * scale - 1)) / (2 * scale); // Number of lines.
 				if (reps > 0) {
-					this->DrawSmallMapColumn(ptr, tile_x, tile_y, dpi->pitch * 2, reps, x, end_pos, blitter);
+					this->DrawSmallMapColumn(ptr, tile_x, tile_y, dpi->pitch * 2 * scale, reps, x, end_pos, blitter);
 				}
 			}
 
 			if (y == 0) {
 				tile_y += this->zoom;
-				y++;
-				ptr = blitter->MoveTo(ptr, 0, 1);
+				y = scale;
+				ptr = blitter->MoveTo(ptr, 0, scale);
 			} else {
 				tile_x -= this->zoom;
-				y--;
-				ptr = blitter->MoveTo(ptr, 0, -1);
+				y = 0;
+				ptr = blitter->MoveTo(ptr, 0, -scale);
 			}
-			ptr = blitter->MoveTo(ptr, 2, 0);
-			x += 2;
+			ptr = blitter->MoveTo(ptr, 2 * scale, 0);
+			x += 2 * scale;
 		}
 
 		/* Draw vehicles */
@@ -1131,14 +1139,23 @@ protected:
 	{
 		int x_offset = tile_x - this->scroll_x / (int)TILE_SIZE;
 		int y_offset = tile_y - this->scroll_y / (int)TILE_SIZE;
+		int scale = this->GetZoomScale();
 
-		if (this->zoom == 1) return SmallmapRemapCoords(x_offset, y_offset);
+		if (this->zoom == 1) {
+			Point pt = SmallmapRemapCoords(x_offset, y_offset);
+			pt.x *= scale;
+			pt.y *= scale;
+			return pt;
+		}
 
 		/* For negative offsets, round towards -inf. */
 		if (x_offset < 0) x_offset -= this->zoom - 1;
 		if (y_offset < 0) y_offset -= this->zoom - 1;
 
-		return SmallmapRemapCoords(x_offset / this->zoom, y_offset / this->zoom);
+		Point pt = SmallmapRemapCoords(x_offset / this->zoom, y_offset / this->zoom);
+		pt.x *= scale;
+		pt.y *= scale;
+		return pt;
 	}
 
 	/**
@@ -1153,7 +1170,12 @@ protected:
 	 */
 	Point PixelToTile(int px, int py, int *sub, bool add_sub = true) const
 	{
+		int scale = this->GetZoomScale();
 		if (add_sub) px += this->subscroll;  // Total horizontal offset.
+
+		/* Convert display pixels to logical smallmap pixels for current zoom scale. */
+		px /= scale;
+		py /= scale;
 
 		/* For each two rows down, add a x and a y tile, and
 		 * For each four pixels to the right, move a tile to the right. */
@@ -1170,7 +1192,7 @@ protected:
 			}
 		}
 
-		*sub = px;
+		*sub = px * scale;
 		return pt;
 	}
 
@@ -1186,6 +1208,7 @@ protected:
 	Point ComputeScroll(int tx, int ty, int x, int y, int *sub) const
 	{
 		assert(x >= 0 && y >= 0);
+		int subscroll_cycle = 4 * this->GetZoomScale();
 
 		int new_sub;
 		Point tile_xy = PixelToTile(x, y, &new_sub, false);
@@ -1198,7 +1221,7 @@ protected:
 			scroll.x = (tx + this->zoom) * TILE_SIZE;
 			scroll.y = (ty - this->zoom) * TILE_SIZE;
 		} else {
-			*sub = 4 - new_sub;
+			*sub = subscroll_cycle - new_sub;
 			scroll.x = (tx + 2 * this->zoom) * TILE_SIZE;
 			scroll.y = (ty - 2 * this->zoom) * TILE_SIZE;
 		}
@@ -1213,44 +1236,45 @@ protected:
 	 */
 	void SetZoomLevel(ZoomLevelChange change, const Point *zoom_pt)
 	{
-		static const int zoomlevels[] = {1, 2, 4, 6, 8}; // Available zoom levels. Bigger number means more zoom-out (further away).
+		static const int zoomlevels[] = {1, 1, 1, 2, 4, 6, 8}; // Indices 0,1 are extra visual zoom-in levels (3x, 2x pixel scale at tile zoom 1).
 		static const int MIN_ZOOM_INDEX = 0;
 		static const int MAX_ZOOM_INDEX = lengthof(zoomlevels) - 1;
 
-		int new_index, cur_index, sub;
+		int new_index, sub;
 		Point tile;
 		switch (change) {
 			case ZLC_INITIALIZE:
-				cur_index = - 1; // Definitely different from new_index.
-				new_index = MIN_ZOOM_INDEX;
+				/* Keep default startup at the previous lowest zoom-out amount.
+				 * Index 0 is an additional zoom-in step. */
+				new_index = MIN_ZOOM_INDEX + 1;
 				tile.x = tile.y = 0;
 				break;
 
 			case ZLC_ZOOM_IN:
 			case ZLC_ZOOM_OUT:
-				for (cur_index = MIN_ZOOM_INDEX; cur_index <= MAX_ZOOM_INDEX; cur_index++) {
-					if (this->zoom == zoomlevels[cur_index]) break;
-				}
-				assert(cur_index <= MAX_ZOOM_INDEX);
-
 				tile = this->PixelToTile(zoom_pt->x, zoom_pt->y, &sub);
-				new_index = Clamp(cur_index + ((change == ZLC_ZOOM_IN) ? -1 : 1), MIN_ZOOM_INDEX, MAX_ZOOM_INDEX);
+				new_index = Clamp(this->zoom_index + ((change == ZLC_ZOOM_IN) ? -1 : 1), MIN_ZOOM_INDEX, MAX_ZOOM_INDEX);
 				break;
 
 			default: NOT_REACHED();
 		}
 
-		if (new_index != cur_index) {
+		if (new_index != this->zoom_index) {
+			int old_scale = this->GetZoomScale();
+			bool initialized = this->zoom_index >= MIN_ZOOM_INDEX && this->zoom_index <= MAX_ZOOM_INDEX;
+			this->zoom_index = new_index;
 			this->zoom = zoomlevels[new_index];
-			if (cur_index >= 0) {
+			int new_scale = this->GetZoomScale();
+			if (old_scale != new_scale && this->map_type == SMT_LINKSTATS) this->overlay->SetDirty();
+			if (initialized && change != ZLC_INITIALIZE) {
 				Point new_tile = this->PixelToTile(zoom_pt->x, zoom_pt->y, &sub);
 				this->SetNewScroll(this->scroll_x + (tile.x - new_tile.x) * TILE_SIZE,
 						this->scroll_y + (tile.y - new_tile.y) * TILE_SIZE, sub);
 			} else if (this->map_type == SMT_LINKSTATS) {
 				this->overlay->SetDirty();
 			}
-			this->SetWidgetDisabledState(WID_SM_ZOOM_IN,  this->zoom == zoomlevels[MIN_ZOOM_INDEX]);
-			this->SetWidgetDisabledState(WID_SM_ZOOM_OUT, this->zoom == zoomlevels[MAX_ZOOM_INDEX]);
+			this->SetWidgetDisabledState(WID_SM_ZOOM_IN,  this->zoom_index == MIN_ZOOM_INDEX);
+			this->SetWidgetDisabledState(WID_SM_ZOOM_OUT, this->zoom_index == MAX_ZOOM_INDEX);
 			this->SetDirty();
 		}
 	}
@@ -1485,11 +1509,12 @@ public:
 	{
 		const Viewport &vp = *GetMainWindow()->viewport;
 		Point viewport_center = InverseRemapCoords2(vp.virtual_left + vp.virtual_width / 2, vp.virtual_top + vp.virtual_height / 2);
+		int scale = this->GetZoomScale();
 
 		int sub;
 		const NWidgetBase *wid = this->GetWidget<NWidgetBase>(WID_SM_MAP);
 		Point sxy = this->ComputeScroll(viewport_center.x / (int)TILE_SIZE, viewport_center.y / (int)TILE_SIZE,
-				std::max(0, (int)wid->current_x / 2 - 2), wid->current_y / 2, &sub);
+				std::max(0, (int)wid->current_x / 2 - 2 * scale), wid->current_y / 2, &sub);
 		this->SetNewScroll(sxy.x, sxy.y, sub);
 		this->SetDirty();
 	}
@@ -1501,6 +1526,7 @@ public:
 	 */
 	Point GetStationMiddle(const Station *st) const
 	{
+		int scale = this->GetZoomScale();
 		int x = CentreBounds(st->rect.left, st->rect.right, 0);
 		int y = CentreBounds(st->rect.top, st->rect.bottom, 0);
 		Point ret = this->RemapTile(x, y);
@@ -1508,7 +1534,7 @@ public:
 		/* Same magic 3 as in DrawVehicles; that's where I got it from.
 		 * No idea what it is, but without it the result looks bad.
 		 */
-		ret.x -= 3 + this->subscroll;
+		ret.x -= 3 * scale + this->subscroll;
 		return ret;
 	}
 
